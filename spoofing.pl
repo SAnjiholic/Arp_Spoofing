@@ -1,8 +1,14 @@
+#!/usr/bin/env perl
 use Net::Pcap;
 use NetPacket::Ethernet qw(:strip);
 use NetPacket::IP qw(:strip);
 use NetPacket::TCP qw(:strip);
 use threads;
+
+
+chomp (my $ip = `ifconfig en0 | grep inet\\ | awk '{print \$2}'`);
+chomp (my $sub = `ifconfig en0 |grep inet\\ | awk '{print \$4}'`);
+my @route = get_route();
 
 my $pcap;
 my $err;
@@ -10,7 +16,7 @@ my $dev = select_dev();
 my $fil = 'host test.gilgil.net or omg-mobile-api.baemin.com';
 my @listing = snif_packet($dev);
 my %map = make_hash(@listing);
-my @route = get_route();
+#my @route = get_route();
 $map->{my_mac} = `ifconfig $dev | grep 'ether ' |awk '{ print \$2}'`;
 $map->{my_mac} =~ s/\n//g;
 $map->{my_ip} = `ifconfig $dev | grep 'inet ' |awk '{ print \$2}'`;
